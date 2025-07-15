@@ -5,16 +5,14 @@ import tiktoken
 import os
 from dotenv import load_dotenv
 
-# === Configure Gemini ===
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
-# === Initialize ChromaDB ===
 chroma_client = chromadb.PersistentClient()
 collection = chroma_client.get_or_create_collection("rag_collection")
 
-# === Chunking Function ===
+# Chunking
 def chunk_text(text, max_tokens=300):
     tokenizer = tiktoken.encoding_for_model('gpt-4')
     words = text.split()
@@ -31,7 +29,6 @@ def chunk_text(text, max_tokens=300):
         chunks.append(' '.join(chunk))
     return chunks
 
-# === Gemini Embedding ===
 def get_gemini_embedding(text):
     response = genai.embed_content(
         model="models/embedding-001",
@@ -40,7 +37,7 @@ def get_gemini_embedding(text):
     )
     return response['embedding']
 
-# === Insert Chunks into ChromaDB ===
+# Chunk insersion
 def insert_text_into_chroma(text, source_id="user_upload"):
     chunks = chunk_text(text)
     ids = []
@@ -55,7 +52,7 @@ def insert_text_into_chroma(text, source_id="user_upload"):
 
     collection.add(ids=ids, embeddings=embeddings, metadatas=metadatas)
 
-# === Query ChromaDB + Gemini ===
+# Query 
 def query_with_context_gemini(question, top_k=3):
     query_embedding = get_gemini_embedding(question)
     results = collection.query(
@@ -73,12 +70,11 @@ def query_with_context_gemini(question, top_k=3):
     return response.text.strip()
 
 
-# === View Knowledge Base ===
+
 def get_knowledge_base_entries():
     all_ids = collection.get(include=["metadatas"])
     return list(zip(all_ids["ids"], all_ids["metadatas"])) if all_ids["ids"] else []
 
-# === Delete Knowledge Base ===
 def clear_knowledge_base():
     all_ids = collection.get()
     if all_ids["ids"]:
@@ -88,51 +84,61 @@ def clear_knowledge_base():
     else:
         st.info("Knowledge base is already empty.")
 
-# === Streamlit UI ===
-st.title("📚 Gemini + ChromaDB RAG App")
+
+st.set_page_config(page_title="📚 RAG Chat", layout="wide")
+st.title("RAG Chat")
+
+
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
 
 if "data_uploaded" not in st.session_state:
     st.session_state["data_uploaded"] = False
 
-# === Upload Section ===
-uploaded_file = st.file_uploader("Upload a text file to add to Knowledge Base", type=["txt"])
+
+uploaded_file = st.sidebar.file_uploader("📁 Upload Knowledge Base File", type=["txt"])
 if uploaded_file and not st.session_state["data_uploaded"]:
     file_content = uploaded_file.read().decode("utf-8")
     insert_text_into_chroma(file_content, source_id=uploaded_file.name)
-    st.success(f"File '{uploaded_file.name}' has been added to the Knowledge Base.")
+    st.sidebar.success(f"'{uploaded_file.name}' added to Knowledge Base.")
     st.session_state["data_uploaded"] = True
 
-# === Knowledge Base Options ===
+
+st.sidebar.markdown("---")
+if st.sidebar.button("🔍 View Knowledge Base"):
+    entries = get_knowledge_base_entries()
+    if not entries:
+        st.sidebar.write("Knowledge base is empty.")
+    else:
+        for idx, metadata in entries:
+            st.sidebar.markdown(f"**ID:** {idx}")
+            st.sidebar.code(metadata['text'])
+
+if st.sidebar.button("🗑️ Clear Knowledge Base"):
+    clear_knowledge_base()
+
+
 st.markdown("---")
-st.subheader("🗂 Knowledge Base Options")
+chat_container = st.container()
 
-col1, col2 = st.columns(2)
+for entry in st.session_state.chat_history:
+    with chat_container.chat_message(entry["role"]):
+        st.markdown(entry["content"])
 
-with col1:
-    if st.button("🔍 View Knowledge Base"):
-        entries = get_knowledge_base_entries()
-        if not entries:
-            st.write("Knowledge base is empty.")
-        else:
-            for idx, metadata in entries:
-                st.markdown(f"**ID:** {idx}")
-                st.code(metadata['text'])
 
-with col2:
-    if st.button("🗑️ Clear Knowledge Base"):
-        clear_knowledge_base()
-        st.success("Knowledge base has been cleared.")
-
-# === Question-Answer Section ===
 if st.session_state["data_uploaded"]:
-    st.markdown("---")
-    st.subheader("💬 Ask a Question")
-    user_question = st.text_input("Enter your question:")
-    if st.button("Get Answer"):
-        if user_question.strip() != "":
-            with st.spinner("Generating answer..."):
-                answer = query_with_context_gemini(user_question)
-                st.markdown("**Answer:**")
-                st.write(answer)
-        else:
-            st.warning("Please enter a question.")
+    user_input = st.chat_input("Type your question here...")
+    if user_input:
+        
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        with chat_container.chat_message("user"):
+            st.markdown(user_input)
+
+        
+        with chat_container.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                answer = query_with_context_gemini(user_input)
+                st.markdown(answer)
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+else:
+    st.info("Upload a knowledge base file to start chatting.")
